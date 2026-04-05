@@ -1,0 +1,11 @@
+JOURNAL.md
+HANDOFF.md
+PLAN.md
+PLAN-CRITIQUE.md
+ASSUMPTION-AUDIT.md
+logs/
+reports/
+conductor-state.json
+conductor.pid
+model-enforcement.state.json
+.DS_Store

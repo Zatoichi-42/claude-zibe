@@ -1,0 +1,25 @@
+{
+  "_comment": "Model and effort configuration for different task types",
+  "tiers": {
+    "high": {
+      "_description": "Planning, architecture, design, critique.",
+      "model": "opus", "effort": "high",
+      "used_by": ["self-plan skill","self-critic agent","meta-ratchet skill","/zibe-retro"]
+    },
+    "standard": {
+      "_description": "Implementation, testing, refactoring.",
+      "model": "sonnet", "effort": "standard",
+      "used_by": ["tdd-test-writer","tdd-implementer","ratchet-loop skill","/zibe-implement"]
+    },
+    "low": {
+      "_description": "Scanning, formatting, simple lookups.",
+      "model": "sonnet", "effort": "low",
+      "used_by": ["scout skill","/zibe-check","/zibe-health"]
+    }
+  },
+  "override_instructions": [
+    "Use /zibe-model to override model globally.",
+    "Use /zibe-effort to override effort globally.",
+    "Use /zibe-enforcement to see current state."
+  ]
+}

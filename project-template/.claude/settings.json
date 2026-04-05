@@ -1,0 +1,103 @@
+{
+  "_comment": "Project-level settings. Merges with ~/.claude/settings.json (global). Project takes precedence on conflict.",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(npm run *)", "Bash(npx *)", "Bash(node *)", "Bash(python *)", "Bash(python3 *)",
+      "Bash(git add *)", "Bash(git commit *)", "Bash(git checkout *)", "Bash(git branch *)",
+      "Bash(git diff *)", "Bash(git log *)", "Bash(git status*)", "Bash(git stash*)",
+      "Bash(cat *)", "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
+      "Bash(grep *)", "Bash(find *)", "Bash(mkdir *)", "Bash(cp *)", "Bash(mv *)",
+      "Bash(chmod +x *)", "Bash(echo *)", "Bash(jq *)", "Bash(timeout *)",
+      "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Agent"
+    ],
+    "deny": [
+      "Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf .git)", "Bash(sudo *)",
+      "Bash(curl * | bash)", "Bash(eval *)",
+      "Bash(git push * --force *)", "Bash(git push * main)", "Bash(git push * master)",
+      "Bash(chmod 777 *)", "Bash(mkfs *)", "Bash(dd *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact|clear",
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/session-start.sh\"",
+          "timeout": 15,
+          "statusMessage": "Loading session context..."
+        }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/pre-tool-security.sh\"",
+          "timeout": 5,
+          "statusMessage": "Security check..."
+        }]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/pre-write-guard.sh\"",
+          "timeout": 5,
+          "statusMessage": "Write guard..."
+        }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/post-edit-autoformat.sh\"",
+          "timeout": 30
+        }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/stop-journal.sh\"",
+          "timeout": 45
+        }]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/subagent-start.sh\"",
+          "timeout": 5
+        }]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/post-compact-handoff.sh\"",
+          "timeout": 15,
+          "statusMessage": "Preserving state..."
+        }]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idleprompt",
+        "hooks": [{
+          "type": "command",
+          "command": "bash \"$HOME/.claude/hooks/notify.sh\"",
+          "timeout": 5,
+          "async": true
+        }]
+      }
+    ]
+  }
+}
