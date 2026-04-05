@@ -1,0 +1,240 @@
+# PLAN — Phase 3: Evaluation and Calibration
+
+Generated: 2026-04-04
+
+---
+
+## Round 1: UNDERSTAND
+
+### What the user is asking
+
+Build an evaluation layer that measures whether the discovery engine produces real signal. Given existing discovery packets (which contain candidates with ranks and scores), fetch forward returns and compute hit rates, rank quality, setup-type quality, score-bucket monotonicity, and calibration guidance.
+
+### Acceptance criteria
+
+1. Given a DiscoveryPacket, the evaluator can produce `evaluation_targets` at scan time — a list of (ticker, as_of, windows) records describing what forward data to collect.
+2. Given evaluation targets and time elapsed, the evaluator fetches forward OHLCV via the existing yfinance adapter and computes raw and benchmark-relative returns at 1D/5D/10D/20D windows.
+3. Signal quality metrics are computable from a set of outcome records:
+   - Hit rate for top-N candidates vs benchmark and universe median
+   - Hit rate by setup type
+   - Hit rate by score decile
+   - Monotonicity check: do higher scores correlate with better returns?
+   - Empty-run and evaluability checks
+4. A calibration summary suggests which score weights and thresholds may need adjustment based on observed outcomes.
+5. All four new sections (`evaluation_targets`, `forward_outcomes`, `signal_quality`, `calibration_summary`) can be attached to a DiscoveryPacket.
+6. Explicit evaluability: runs with fewer than 5 candidates or insufficient outcome data are flagged as non-evaluable with reasons.
+7. All missing forward data is surfaced explicitly (not silently dropped).
+8. Tests cover: forward return calculation, benchmark-relative calculation, hit rate summaries, monotonicity checks, calibration summaries, evaluability checks, evaluation joins.
+
+### Inputs
+
+- A `DiscoveryPacket` (from disk or in-memory) containing `candidates`, `early_discovery`, `scan_input.as_of`, `benchmark_context`
+- yfinance access (same adapter already in `src/adapters/`)
+
+### Outputs
+
+New sections added to DiscoveryPacket (all optional, None if not evaluated):
+
+- `evaluation_targets: list[EvaluationTarget] | None`
+- `forward_outcomes: list[ForwardOutcome] | None`
+- `signal_quality: SignalQuality | None`
+- `calibration_summary: CalibrationSummary | None`
+
+### Existing code touched
+
+| File                              | Change                                                      |
+| --------------------------------- | ----------------------------------------------------------- |
+| `src/core/models.py`              | Add 4 new optional fields to `DiscoveryPacket`              |
+| `src/core/models_evaluation.py`   | NEW — pydantic models for all 4 new sections                |
+| `src/core/evaluator.py`           | NEW — forward return fetch + benchmark-relative calc        |
+| `src/core/signal_quality.py`      | NEW — hit rates, rank quality, monotonicity                 |
+| `src/core/calibrator.py`          | NEW — calibration summary builder                           |
+| `src/cli.py`                      | Add `--evaluate` flag that runs evaluation pass on a packet |
+| `tests/test_evaluator.py`         | NEW                                                         |
+| `tests/test_signal_quality.py`    | NEW                                                         |
+| `tests/test_calibrator.py`        | NEW                                                         |
+| `tests/test_evaluation_models.py` | NEW                                                         |
+
+**Total new files: 4 source + 4 test = 8 files** — borderline. Mitigated by collapsing calibrator into signal_quality (see Round 3).
+
+---
+
+## Round 2: CHALLENGE
+
+### Design risks and open questions
+
+**1. Separate pass vs inline**
+Evaluation must be a separate pass. Forward returns are not available at scan time. The design is: scan → produce packet → later, evaluate → enrich packet (or write new `*_evaluated.json`).
+Decision: write a _new_ `*_evaluated.json` file rather than mutating the original packet. Preserves the original artifact.
+
+**2. Forward return definition**
+
+- as_of is a trading date (validated by existing adapter — if not, it gets the last available close)
+- +1D/+5D/+10D/+20D means N _trading_ days forward, not calendar days
+- Implementation: fetch OHLCV using a dynamic period `max(60, (today - as_of).days + 40)` to handle packets of any age. Find the row at as_of by date match, then offset by N rows. Validate that the offset row's date falls within ±2 trading days of the expected forward date — if not, mark `data_status = "gap"` to avoid silently wrong returns.
+- Missing data (delisted, halt): explicitly surfaced in `ForwardOutcome.data_status`
+- yfinance adjusted close is used throughout — splits are handled automatically
+
+**3. Splits and corporate actions**
+yfinance returns adjusted closes by default. This is correct behavior for return calculation — no special handling needed. Document this assumption.
+
+**4. Evaluability threshold**
+Minimum for meaningful hit rate: ≥5 candidates with outcomes. Fewer than 5 → `is_evaluable=False` with reason. Minimum for monotonicity: ≥10 candidates with outcomes.
+
+**5. Benchmark-relative return**
+`alpha = candidate_return - spy_return` for each window. If SPY return is missing, alpha is None (not zero). Missing SPY is surfaced explicitly.
+
+**6. Score bucket scheme**
+Default `top_n_candidates=20` — decile bucketing is meaningless here. Cutoffs:
+
+- N < 20 → 3 buckets (terciles: low/mid/high)
+- N 20–49 → 5 buckets (quintiles)
+- N ≥ 50 → 10 buckets (deciles)
+
+**7. Monotonicity metric definition**
+Use Spearman rank correlation (score vs forward return). Report rho, p-value, and N.
+
+- N < 15: emit `evaluability_status = "insufficient_data"` — no binary pass/fail signal
+- N ≥ 15: report rho with p-value. Green requires p < 0.05.
+
+**8. Calibration summary scope**
+Calibration records per-component outcome data for future aggregation — NOT prescriptive guidance on a single run. Stores component-level hit rates and return direction. Prescriptive weight recommendations require multi-run data (Phase 4).
+
+**8. Empty-run frequency**
+Measure: count of runs with 0 candidates / total runs evaluated. Requires multi-packet evaluation, which is out of scope for this phase (single-packet evaluation is sufficient for Phase 3).
+
+---
+
+## Round 3: SIMPLIFY
+
+**Collapse calibrator into signal_quality**: `calibrator.py` is thin — calibration is just a derived view of signal quality metrics. Merge into `signal_quality.py`. Eliminates one file.
+
+**Revised file count: 3 source + 3 test = 6 files** (plus model additions to existing files).
+
+**Final module list:**
+
+1. `src/core/models_evaluation.py` — all new pydantic models
+2. `src/core/evaluator.py` — forward return fetch + benchmark-relative calc
+3. `src/core/signal_quality.py` — hit rates, rank quality, monotonicity, calibration summary
+4. `src/core/models.py` — add 4 optional fields (no new file)
+5. `src/cli.py` — add `evaluate` subcommand
+
+**No new dependencies.** Uses existing yfinance adapter, existing pydantic, existing models.
+
+**Evaluation targets are self-describing**: `EvaluationTarget` stores ticker, as_of, eval_windows=[1,5,10,20], rank, score, setup_type. This makes each packet independently evaluable without cross-packet joins.
+
+**No multi-packet aggregation in Phase 3.** Single-packet evaluation only. Multi-run aggregation (measuring empty-run frequency across runs) is deferred to Phase 4.
+
+---
+
+## Round 4: SEQUENCE
+
+### Test names (RED first)
+
+**test_evaluation_models.py**
+
+- `test_evaluation_target_fields`
+- `test_forward_outcome_fields`
+- `test_signal_quality_fields`
+- `test_calibration_summary_fields`
+- `test_forward_outcome_missing_data_explicit`
+- `test_evaluability_result_not_evaluable_reason_required`
+
+**test_evaluator.py**
+
+- `test_compute_forward_return_basic`
+- `test_compute_forward_return_window_5d`
+- `test_compute_forward_return_missing_data_returns_none`
+- `test_compute_forward_return_gap_row_date_mismatch_marks_gap`
+- `test_compute_forward_return_dynamic_period_old_packet`
+- `test_compute_benchmark_relative_return`
+- `test_compute_benchmark_relative_missing_spy_returns_none`
+- `test_build_evaluation_targets_from_packet`
+- `test_build_forward_outcomes_from_targets`
+- `test_forward_outcomes_explicit_when_data_unavailable`
+- `test_evaluability_check_fewer_than_5_candidates`
+- `test_evaluability_check_sufficient_outcomes`
+
+**test_signal_quality.py**
+
+- `test_hit_rate_top_n_vs_benchmark`
+- `test_hit_rate_by_setup_type`
+- `test_hit_rate_by_score_bucket`
+- `test_monotonicity_check_positive_spearman_rho_and_pvalue`
+- `test_monotonicity_check_insufficient_data_below_15`
+- `test_monotonicity_check_no_signal`
+- `test_calibration_summary_records_component_hit_rates`
+- `test_calibration_summary_no_prescriptive_text`
+- `test_signal_quality_non_evaluable_when_insufficient_data`
+- `test_score_bucket_terciles_for_n_under_20`
+- `test_score_bucket_quintiles_for_n_20_to_49`
+- `test_score_bucket_deciles_for_n_50_plus`
+
+### Implementation order
+
+1. `models_evaluation.py` (models first, no logic)
+2. `models.py` additions (add 4 optional fields)
+3. `evaluator.py` (pure functions: forward return calculation, benchmark-relative)
+4. `signal_quality.py` (pure functions: hit rates, monotonicity, calibration summary)
+5. `cli.py` evaluate subcommand (wires everything together)
+
+### Commit points
+
+1. `feat: add evaluation models (EvaluationTarget, ForwardOutcome, SignalQuality, CalibrationSummary)`
+2. `feat: add forward return evaluator with benchmark-relative calculation`
+3. `feat: add signal quality metrics and calibration summary`
+4. `feat: add evaluate subcommand to CLI`
+
+---
+
+## Round 5: VERIFY
+
+### Are criteria testable?
+
+- Forward return calculation: yes — inject a DataFrame with known closes, assert exact returns
+- Benchmark-relative: yes — inject known candidate return + known SPY return, assert alpha
+- Hit rate: yes — synthetic list of ForwardOutcome with known above/below benchmark flags
+- Monotonicity: yes — sorted score list with known return direction
+- Evaluability check: yes — pass <5 outcomes, assert is_evaluable=False with reason text
+- Calibration: yes — inject outcomes where one component correlates strongly, assert it appears in summary
+
+### Edge cases addressed?
+
+- ✅ Delisted/missing data → `ForwardOutcome.data_status = "missing"`, return fields = None
+- ✅ Weekend/holiday as_of → yfinance returns last available trading day (same as existing adapter behavior)
+- ✅ Splits → yfinance adjusted close handles this
+- ✅ Missing SPY → alpha = None, surfaced explicitly
+- ✅ Small N (< 5 candidates) → non-evaluable, flagged with reason
+- ✅ Small N for monotonicity (< 15) → `evaluability_status = "insufficient_data"`, no binary signal
+- ✅ Monotonicity at N ≥ 15 → Spearman rho + p-value; green requires p < 0.05
+- ✅ Score bucket N < 20 → terciles; N 20–49 → quintiles; N ≥ 50 → deciles
+- ✅ CalibrationSummary is data-only (component hit rates), not prescriptive guidance
+
+### Is this the simplest path?
+
+Yes. No new dependencies. Pure functions where possible. Models first. Evaluation is a separate pass. No mutation of original packets.
+
+### No premature abstraction?
+
+- No base classes for "evaluators"
+- No plugin architecture
+- No abstract metric registry
+- Signal quality and calibration are in one file because they share the same input data
+
+---
+
+## Files to create/modify
+
+| File                              | Action                                 | Est. lines |
+| --------------------------------- | -------------------------------------- | ---------- |
+| `src/core/models_evaluation.py`   | CREATE                                 | ~120       |
+| `src/core/models.py`              | MODIFY (add 4 fields)                  | +8         |
+| `src/core/evaluator.py`           | CREATE                                 | ~150       |
+| `src/core/signal_quality.py`      | CREATE                                 | ~180       |
+| `src/cli.py`                      | MODIFY (add evaluate subcommand)       | +60        |
+| `tests/test_evaluation_models.py` | CREATE                                 | ~120       |
+| `tests/test_evaluator.py`         | CREATE                                 | ~200       |
+| `tests/test_signal_quality.py`    | CREATE                                 | ~200       |
+| `tests/test_cli.py`               | MODIFY (add evaluate subcommand tests) | +40        |
+
+All source files stay under 300 lines. All functions under 40 lines.

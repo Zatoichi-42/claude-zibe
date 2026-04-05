@@ -25,7 +25,10 @@ Separate context prevents implementation bleeding into test logic.
 3. For each behavior: input, output, edge cases
 
 ## Phase 2: RED
-Delegate to `tdd-test-writer` subagent. After: confirm FAIL, commit `test: red — [feature]`
+Delegate to ONE `tdd-test-writer` subagent — never split across multiple agents.
+Shared types must be fully tested by a single agent in a single context.
+After agent returns: run the FULL suite to confirm only the expected tests fail and there are no intra-test conflicts.
+Only then commit `test: red — [feature]`
 
 ## Phase 3: GREEN
 Delegate to `tdd-implementer` subagent. After: confirm PASS, commit `feat: green — [feature]`
@@ -41,3 +44,6 @@ Full suite + typecheck + lint. Fix or revert if newly broken.
 - One behavior per test. Mock externals, never the unit under test.
 - If user gave exact error string, reproduce it exactly.
 - For CLI bugs, test the real entrypoint.
+- Delegation prompts must end with: "Write EXACTLY the tests listed. Nothing else."
+- If a test is wrong (out-of-spec, conflicts with another test file): ask user before removing it.
+  Authorized removals may be done via Bash to bypass the write guard — document the reason in the commit message.

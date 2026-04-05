@@ -1,0 +1,70 @@
+# PLAN-CRITIQUE — Phase 3: Evaluation and Calibration
+
+Generated: 2026-04-04
+
+---
+
+## Verdict: REVISE (before implementation)
+
+## Critical Issues
+
+### 1. 60-day fetch window is insufficient
+
+`period="60d"` is ~42-43 trading days. A packet generated weeks before evaluation could push `as_of` near the start of the window, leaving insufficient forward rows. Dynamic period required:
+
+```
+period_days = max(60, (today - as_of).days + 40)
+```
+
+**Fix:** Compute period dynamically in `evaluator.py` based on `as_of` age.
+
+### 2. Row-index offset is fragile (silently wrong)
+
+"Find the row at as_of, then offset by N rows" is not reliable. yfinance can return rows with gaps (halted stocks, suspended trading). Row index N+5 ≠ 5th trading day after as_of.
+
+**Fix:** After row lookup, validate that the offset row's date falls within ±2 trading days of the expected forward date. If not, mark `data_status = "gap"` rather than returning a silently incorrect return.
+
+### 3. Tercile/decile gap at N=15–29
+
+Plan says terciles for N<15, deciles for N≥30. Default `top_n_candidates=20` falls in the undefined range.
+
+**Fix:** Use 3 buckets (terciles) for N<20, 5 buckets (quintiles) for N 20–49, 10 buckets (deciles) for N≥50. Document the cutoffs.
+
+---
+
+## Concerns
+
+### 4. Monotonicity metric is undefined
+
+"Monotonicity check" with N≥10 is named but not defined. Spearman on N=10 has a critical value ~0.648 (p=0.05) — frequent false positives/negatives.
+
+**Fix:** Use Spearman rank correlation. Report the rho value, p-value, and N alongside any pass/fail indicator. Do not emit a binary green/red at N<15 — emit "insufficient_data" instead.
+
+### 5. CalibrationSummary is an overclaim for single-packet evaluation
+
+"Suggests which score weights need adjustment" is not supportable with 20 observations. Misleading.
+
+**Fix:** Reframe as "records per-component outcome alignment for future aggregation." CalibrationSummary stores component-level hit rates and return direction — raw data, not guidance. Remove prescriptive language from the model description.
+
+### 6. No CLI test named
+
+`test_cli.py` exists. No `test_cli_evaluate` test is in the test list.
+
+**Fix:** Add `test_cli_evaluate_subcommand_runs` and `test_cli_evaluate_writes_evaluated_json` to test list.
+
+### 7. EvaluatedPacket wrapper vs 4 optional fields on DiscoveryPacket
+
+Adding 4 optional fields to `DiscoveryPacket` couples evaluation to the core packet schema. Every test that constructs a DiscoveryPacket now implicitly carries evaluation fields.
+
+**Fix (accepted trade-off):** Keep 4 optional fields but do NOT add them to `packet_builder.py` or `runner.py`. They are populated only by the evaluator pass. The `*_evaluated.json` file is the enriched copy. The original packet is never modified. This is already the plan's intent — just enforce it explicitly.
+
+---
+
+## What is Good (keep)
+
+- Separate evaluation pass design
+- No new dependencies
+- CalibrationSummary merged into signal_quality (one less file)
+- Explicit missing-data surfacing via `data_status`
+- Evaluability thresholds
+- Concrete test names

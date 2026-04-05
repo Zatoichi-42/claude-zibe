@@ -1,0 +1,67 @@
+# Phase 3 Code Prompt: Evaluation and Calibration
+
+## Purpose
+Phase 3 is the evaluation layer of the equity discovery system.
+
+Phase 1 discovers candidates.
+Phase 2 makes the engine observable and debuggable.
+Phase 3 determines whether the discovery engine is actually useful.
+
+The purpose of this phase is to measure whether surfaced candidates outperform over forward windows, whether setup types have predictive value, whether higher scores correspond to better outcomes, and whether the early-discovery lane adds signal or noise.
+
+## Scope
+This phase should focus on evaluating the existing discovery engine rather than expanding it with new data domains.
+
+Phase 3 should:
+- track forward outcomes for surfaced candidates
+- compare those outcomes against benchmarks and the scanned universe
+- measure signal quality by rank, setup type, and score bucket
+- determine whether the discovery logic is monotonic and calibratable
+- produce calibration guidance for thresholds and score weights
+- preserve explicit error reporting and evaluability checks
+
+## What this phase should answer
+At the end of Phase 3, the system should be able to answer questions such as:
+
+- Do top-ranked candidates outperform the benchmark?
+- Do top-ranked candidates outperform the median name in the scan universe?
+- Which setup types are strongest?
+- Which setup types are weak or noisy?
+- Does a higher discovery score correspond to better forward returns?
+- Does the early-discovery lane identify real rising stars or false positives?
+- Are there enough outcomes available to judge a run statistically?
+
+## Design requirements
+Phase 3 should remain:
+- deterministic
+- machine-readable
+- timestamped
+- schema-stable
+- explicit about missing data
+- explicit about degraded or non-evaluable runs
+
+## Constraints
+This phase should not add:
+- news ingestion
+- social ingestion
+- fundamentals
+- portfolio logic
+- UI or dashboards
+- LLM-based ranking
+
+These can come later. Phase 3 is about proving that the current engine has signal.
+
+## Output expectations
+Phase 3 should extend the existing packet family with evaluation-oriented sections that make signal quality measurable and calibration possible.
+
+The outputs should make it possible to judge:
+- candidate-level outcomes
+- aggregate hit rates
+- rank quality
+- setup-type quality
+- score-bucket quality
+- calibration opportunities
+- evaluability of each run
+
+## Success condition
+Phase 3 is successful when the system can show, in a structured and testable way, whether its discovered candidates actually work better than chance, benchmark, or median-universe alternatives over defined forward windows.

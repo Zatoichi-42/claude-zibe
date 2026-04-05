@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Sentinel discovery CLI — generates one discovery packet per run."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import date
+from pathlib import Path
+
+from src.core.models import DiscoveryConfig, RunStatus
+import src.core.runner as _runner
+import src.core.packet_writer as _writer
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Generate an equity discovery packet.")
+    parser.add_argument(
+        "--universe", required=True, type=Path, help="Path to universe.csv"
+    )
+    parser.add_argument(
+        "--watchlist", default=None, type=Path, help="Path to optional watchlist.csv"
+    )
+    parser.add_argument(
+        "--output", required=True, type=Path, help="Output directory for packet"
+    )
+    parser.add_argument(
+        "--as-of",
+        dest="as_of",
+        default=None,
+        help="As-of date YYYY-MM-DD (default: today)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["normal", "debug", "validation"],
+        default="normal",
+        help="Output verbosity mode (default: normal)",
+    )
+    parser.add_argument(
+        "--min-timeframe",
+        dest="min_timeframe",
+        default=None,
+        type=int,
+        help="Minimum history days required for a symbol (default: 250)",
+    )
+    return parser.parse_args(argv)
+
+
+def _main_discover(argv) -> int:
+    args = _parse_args(argv)
+
+    as_of = date.today()
+    if args.as_of:
+        as_of = date.fromisoformat(args.as_of)
+
+    config_kwargs = {"verbosity": args.mode}
+    if args.min_timeframe is not None:
+        config_kwargs["min_history_days"] = args.min_timeframe
+    config = DiscoveryConfig(**config_kwargs)
+
+    try:
+        packet = _runner.run_discovery(
+            universe_path=args.universe,
+            watchlist_path=args.watchlist,
+            config=config,
+            as_of=as_of,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    output_path = _writer.write_packet(packet, args.output)
+
+    n_candidates = len(packet.candidates)
+    print(f"Done. {n_candidates} candidates found. Packet: {output_path}")
+
+    if packet.meta.run_status == RunStatus.ERROR:
+        sys.exit(2)
+    if packet.meta.run_status == RunStatus.PARTIAL_SUCCESS:
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _parse_evaluate_args(argv):
+    parser = argparse.ArgumentParser(description="Evaluate a discovery packet.")
+    parser.add_argument(
+        "--packet", required=True, type=Path, help="Path to packet JSON file"
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Output directory for evaluated packet",
+    )
+    return parser.parse_args(argv)
+
+
+def _main_evaluate(argv) -> int:
+    args = _parse_evaluate_args(argv)
+
+    import json
+
+    from src.core.evaluator import (
+        build_evaluation_targets,
+        build_forward_outcomes,
+        check_evaluability,
+    )
+    from src.core.models import DiscoveryPacket
+    from src.core.signal_quality import build_calibration_summary, build_signal_quality
+
+    try:
+        raw = json.loads(args.packet.read_text())
+        packet = DiscoveryPacket.model_validate(raw)
+    except Exception as exc:
+        print(f"ERROR: could not load packet: {exc}", file=sys.stderr)
+        return 2
+
+    targets = build_evaluation_targets(packet)
+
+    import pandas as pd
+    import yfinance as yf
+
+    ohlcv_data = {}
+    spy_df = None
+    tickers = list({t.ticker for t in targets})
+
+    if tickers:
+        try:
+            as_of = packet.scan_input.as_of
+            period_days = max(60, (date.today() - as_of).days + 40)
+            period_str = f"{period_days}d"
+            all_tickers = tickers + (["SPY"] if "SPY" not in tickers else [])
+            raw_data = yf.download(
+                all_tickers, period=period_str, auto_adjust=True, progress=False
+            )
+
+            if isinstance(raw_data.columns, pd.MultiIndex):
+                for ticker in tickers:
+                    try:
+                        df = raw_data.xs(ticker, axis=1, level=1)
+                        if not df.empty:
+                            ohlcv_data[ticker] = df
+                    except KeyError:
+                        pass
+                if "SPY" in all_tickers:
+                    try:
+                        spy_df = raw_data.xs("SPY", axis=1, level=1)
+                        if spy_df.empty:
+                            spy_df = None
+                    except KeyError:
+                        spy_df = None
+            elif len(all_tickers) == 1 and not raw_data.empty:
+                ohlcv_data[all_tickers[0]] = raw_data
+        except Exception:
+            pass
+
+    windows = [1, 5, 10, 20]
+    outcomes = build_forward_outcomes(targets, ohlcv_data, spy_df)
+    evaluability = check_evaluability(outcomes)
+
+    signal_quality_list = []
+    calibration_list = []
+    for window in windows:
+        window_outcomes = [o for o in outcomes if o.window == window]
+        scored = [
+            (
+                t.score,
+                next(
+                    (o.forward_return for o in window_outcomes if o.ticker == t.ticker),
+                    None,
+                ),
+            )
+            for t in targets
+        ]
+        sq = build_signal_quality(window, window_outcomes, scored)
+        signal_quality_list.append(sq)
+        cs = build_calibration_summary(window, [])
+        calibration_list.append(cs)
+
+    packet.evaluation_targets = targets
+    packet.forward_outcomes = outcomes
+    packet.signal_quality = signal_quality_list
+    packet.calibration_summary = calibration_list
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    out_path = args.output / f"{packet.meta.run_id}_evaluated.json"
+    out_path.write_text(packet.model_dump_json(indent=2))
+
+    n_ok = sum(1 for o in outcomes if o.data_status == "ok")
+    status = "evaluable" if evaluability.is_evaluable else "not evaluable"
+    print(
+        f"Done. {len(targets)} targets, {n_ok} outcomes with data. Status: {status}. Packet: {out_path}"
+    )
+    return 0
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "evaluate":
+        return _main_evaluate(argv[1:])
+    return _main_discover(argv)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,72 @@
+"""Pydantic v2 models for Phase 3 evaluation."""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+from src.core.models import EarlyDiscoverySetupType, SetupType
+
+MonotonicityStatus = Literal["positive", "negative", "flat", "insufficient_data"]
+BucketScheme = Literal["terciles", "quintiles", "deciles"]
+DataStatus = Literal["ok", "missing", "gap"]
+EvalWindow = Literal[1, 5, 10, 20]
+
+
+class EvaluationTarget(BaseModel):
+    ticker: str
+    as_of: date
+    rank: int = Field(ge=1)
+    score: float = Field(ge=0.0, le=1.0)
+    setup_type: SetupType
+    early_discovery_setup_type: EarlyDiscoverySetupType | None = None
+    eval_windows: list[int] = Field(default_factory=lambda: [1, 5, 10, 20])
+
+
+class ForwardOutcome(BaseModel):
+    ticker: str
+    as_of: date
+    window: EvalWindow
+    forward_return: float | None
+    benchmark_return: float | None
+    alpha: float | None
+    data_status: DataStatus
+
+    @model_validator(mode="after")
+    def ok_status_requires_forward_return(self) -> ForwardOutcome:
+        if self.data_status == "ok" and self.forward_return is None:
+            raise ValueError("forward_return must not be None when data_status is 'ok'")
+        return self
+
+
+class EvaluabilityResult(BaseModel):
+    is_evaluable: bool
+    outcome_count: int
+    reasons: list[str]
+
+    @model_validator(mode="after")
+    def not_evaluable_requires_reasons(self) -> EvaluabilityResult:
+        if not self.is_evaluable and not self.reasons:
+            raise ValueError("reasons must not be empty when is_evaluable is False")
+        return self
+
+
+class SignalQuality(BaseModel):
+    window: int
+    n_outcomes: int
+    hit_rate_vs_benchmark: float | None
+    median_alpha: float | None
+    hit_rate_by_setup: dict[str, float]
+    hit_rate_by_bucket: dict[str, float]
+    spearman_rho: float | None
+    spearman_pvalue: float | None
+    monotonicity_status: MonotonicityStatus
+    bucket_scheme: BucketScheme
+
+
+class CalibrationSummary(BaseModel):
+    window: int
+    component_hit_rates: dict[str, float]
+    component_median_alphas: dict[str, float | None]

@@ -1,0 +1,2 @@
+{"type":"last-prompt","lastPrompt":"python -m src.cli --universe UNIVERSE.csv --output tmp --mode validation /home/zorrik/Projects/Sentinel/.venv/bin/python: Error while finding module specification for 'src.cli' (ModuleNotFoundError: N…","sessionId":"d83d30c3-1b46-4c7c-b036-e069e29359bf"}
+{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"d83d30c3-1b46-4c7c-b036-e069e29359bf"}

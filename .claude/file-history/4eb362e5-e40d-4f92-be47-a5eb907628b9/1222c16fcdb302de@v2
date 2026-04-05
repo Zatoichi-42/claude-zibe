@@ -1,0 +1,155 @@
+"""Phase 3 evaluation functions — pure, no live data fetches."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import pandas as pd
+
+from src.core.models_evaluation import (
+    EvaluabilityResult,
+    EvaluationTarget,
+    ForwardOutcome,
+)
+
+__all__ = [
+    "compute_forward_period",
+    "extract_forward_return",
+    "compute_alpha",
+    "build_evaluation_targets",
+    "build_forward_outcomes",
+    "check_evaluability",
+    "EvaluationTarget",
+    "EvaluabilityResult",
+    "ForwardOutcome",
+]
+
+
+def compute_forward_period(as_of: date) -> int:
+    """Returns calendar days to fetch: max(60, days_since_as_of + 40)."""
+    days_since = (date.today() - as_of).days
+    return max(60, days_since + 40)
+
+
+def extract_forward_return(
+    df: pd.DataFrame,
+    as_of: date,
+    window: int,
+) -> tuple[float | None, str]:
+    """Find as_of row in df by date, offset by window rows.
+
+    Validates offset row date is within expected calendar-day range.
+    Returns (return_value, data_status) where status is 'ok', 'missing', or 'gap'.
+    """
+    if df is None or df.empty:
+        return None, "missing"
+
+    dates = list(pd.to_datetime(df.index).date)
+
+    try:
+        as_of_idx = dates.index(as_of)
+    except ValueError:
+        return None, "missing"
+
+    target_idx = as_of_idx + window
+    if target_idx >= len(df):
+        return None, "missing"
+
+    offset_date = dates[target_idx]
+    expected_min = as_of + timedelta(days=window)
+    expected_max = as_of + timedelta(days=int(window * 1.5) + 3)
+    if offset_date < expected_min or offset_date > expected_max:
+        return None, "gap"
+
+    base_close = df["Close"].iloc[as_of_idx]
+    forward_close = df["Close"].iloc[target_idx]
+    if pd.isna(base_close) or pd.isna(forward_close) or base_close == 0:
+        return None, "missing"
+
+    return float((forward_close - base_close) / base_close), "ok"
+
+
+def compute_alpha(
+    candidate_return: float | None,
+    benchmark_return: float | None,
+) -> float | None:
+    if candidate_return is None or benchmark_return is None:
+        return None
+    return candidate_return - benchmark_return
+
+
+def build_evaluation_targets(packet: object) -> list[EvaluationTarget]:
+    """Build EvaluationTarget list from a DiscoveryPacket's candidates."""
+    targets = []
+    for c in packet.candidates:  # type: ignore[union-attr]
+        targets.append(
+            EvaluationTarget(
+                ticker=c.ticker,
+                as_of=c.as_of,
+                rank=c.rank,
+                score=c.score,
+                setup_type=c.setup_type,
+            )
+        )
+    return targets
+
+
+def build_forward_outcomes(
+    targets: list[EvaluationTarget],
+    ohlcv_data: dict[str, pd.DataFrame],
+    spy_df: pd.DataFrame | None,
+) -> list[ForwardOutcome]:
+    outcomes: list[ForwardOutcome] = []
+    for target in targets:
+        df = ohlcv_data.get(target.ticker)
+        for window in target.eval_windows:
+            if df is None or (hasattr(df, "empty") and df.empty):
+                outcomes.append(
+                    ForwardOutcome(
+                        ticker=target.ticker,
+                        as_of=target.as_of,
+                        window=window,
+                        forward_return=None,
+                        benchmark_return=None,
+                        alpha=None,
+                        data_status="missing",
+                    )
+                )
+                continue
+
+            fwd_return, status = extract_forward_return(df, target.as_of, window)
+            bench_return, bench_status = (
+                extract_forward_return(spy_df, target.as_of, window)
+                if spy_df is not None and not spy_df.empty
+                else (None, "missing")
+            )
+            alpha = compute_alpha(
+                fwd_return if status == "ok" else None,
+                bench_return if bench_status == "ok" else None,
+            )
+            outcomes.append(
+                ForwardOutcome(
+                    ticker=target.ticker,
+                    as_of=target.as_of,
+                    window=window,
+                    forward_return=fwd_return if status == "ok" else None,
+                    benchmark_return=bench_return if bench_status == "ok" else None,
+                    alpha=alpha,
+                    data_status=status,
+                )
+            )
+    return outcomes
+
+
+def check_evaluability(outcomes: list[ForwardOutcome]) -> EvaluabilityResult:
+    """Check if the outcome set is sufficient for meaningful evaluation."""
+    distinct_tickers = {o.ticker for o in outcomes if o.data_status == "ok"}
+    n = len(distinct_tickers)
+    reasons: list[str] = []
+    if n < 5:
+        reasons.append(f"only {n} tickers with valid outcomes (need ≥5)")
+    return EvaluabilityResult(
+        is_evaluable=len(reasons) == 0,
+        outcome_count=n,
+        reasons=reasons,
+    )

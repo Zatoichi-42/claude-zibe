@@ -13,9 +13,14 @@ if echo "$FILE_PATH" | grep -qE 'package-lock\.json|yarn\.lock|pnpm-lock\.yaml|\
   echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BLOCKED: Protected/generated file."}}'
   exit 0
 fi
+# Allow authorized test fixes: set CLAUDE_AUTHORIZE_TEST_EDIT=1 to bypass.
+# Use only for deliberate, user-approved removal of out-of-spec tests.
+if [ "${CLAUDE_AUTHORIZE_TEST_EDIT:-}" = "1" ]; then
+  exit 0
+fi
 if [ "${CLAUDE_TDD_PHASE:-}" != "red" ]; then
   if echo "$FILE_PATH" | grep -qE '\.test\.|\.spec\.|__tests__/|/test/|/tests/'; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BLOCKED: Test files protected during implementation. Fix source code instead.","additionalContext":"Tests are the SPEC. If the test is wrong, ASK the user."}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BLOCKED: Test files protected during implementation. Fix source code instead. To authorize an out-of-spec test removal, set CLAUDE_AUTHORIZE_TEST_EDIT=1.","additionalContext":"Tests are the SPEC. If the test is wrong, ASK the user."}}'
     exit 0
   fi
 fi
